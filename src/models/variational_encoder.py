@@ -1,5 +1,7 @@
 from typing import ForwardRef
 import torch
+from torch import optim
+from torch.distributions import transforms
 from torch.distributions.transforms import ReshapeTransform; torch.manual_seed(0)
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,11 +9,14 @@ import torch.utils
 import torch.distributions
 import torchvision
 import numpy as np
+import torchvision.datasets as datasets
+from tqdm import tqdm 
+import time
 # 
 
 
 # code adapted form https://avandekleut.github.io/vae/
-class Encoder(nn.module):
+class Encoder(nn.Module):
 
     def __init__(self, latentDims):
         super().__init__()
@@ -56,7 +61,7 @@ class VariationalEncoder(nn.Module):
 
 
 
-class Decoder(nn.module) :
+class Decoder(nn.Module) :
 
     def __init__(self, latentDims):
         super().__init__()
@@ -69,11 +74,12 @@ class Decoder(nn.module) :
     def forward(self, z):
 
         z = F.relu(self.linear1(z))
+        #TODO why sigmoid ? 
         z = F.sigmoid(self.linear2(z))
         return z.reshape(-1,1,28,28)
         
 
-class VariationalAutoEncoder(nn.module):
+class VariationalAutoEncoder(nn.Module):
 
     def __init__(self, latentDims) :
         super().__init__()
@@ -90,4 +96,21 @@ class VariationalAutoEncoder(nn.module):
 
 if __name__=="__main__":
 
-    pass 
+    latentDims = 2 
+    epochs = 1
+    save_path = "D:\Deep-Learning-2021\Deep-Learning-2021\models\model.pth"
+    mnist_trainset = datasets.MNIST(root= "D:\Deep-Learning-2021\Deep-Learning-2021\src\data", train=True, download = True, transform = torchvision.transforms.ToTensor())
+    vae = VariationalAutoEncoder(latentDims)
+    opt = torch.optim.Adam(vae.parameters())
+    #TODO : compatibility to GPU
+    for epoch in tqdm(range(epochs)):
+        for x , y in tqdm(mnist_trainset):
+            opt.zero_grad()
+            x_pred = vae(x)
+            loss = ((x - x_pred)**2).sum() + vae.encoder.kl
+            loss.backward()
+            opt.step()
+            # print(epoch)
+
+    torch.save(vae.state_dict(), save_path)
+    
