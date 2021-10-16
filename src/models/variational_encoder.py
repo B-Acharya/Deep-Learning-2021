@@ -2,7 +2,8 @@ from typing import ForwardRef
 import torch
 from torch import optim
 from torch.distributions import transforms
-from torch.distributions.transforms import ReshapeTransform; torch.manual_seed(0)
+from torch.distributions.transforms import ReshapeTransform
+from torchvision.datasets.mnist import MNIST; torch.manual_seed(0)
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils
@@ -12,6 +13,8 @@ import numpy as np
 import torchvision.datasets as datasets
 from tqdm import tqdm 
 import time
+from torch.utils.data import DataLoader
+import sys 
 # 
 
 
@@ -59,7 +62,47 @@ class VariationalEncoder(nn.Module):
         self.kl = (sigma**2 + mu**2 - torch.log(sigma) - 1/2).sum()
         return z
 
+class VariationalEncoder_1(nn.Module):
 
+    def __init__(self, latent_dims):
+        super().__init__()
+        #simple linear later 
+        self.linear1_0 = nn.Linear(784, 512)
+        self.linear2_0 = nn.Linear(512, 256)
+
+        self.linear1_1 = nn.Linear(784, 512)
+        self.linear2_1 = nn.Linear(512, 256)
+
+        #calculate mean|
+        #calculate varience
+        self.linear2 = nn.Linear(512, latent_dims)
+        self.linear3 = nn.Linear(512, latent_dims)
+        #adding the distribution to sample from 
+        self.N = torch.distributions.Normal(0, 1)
+        self.kl = 0
+
+    def forward(self, x):
+        x1 = x[0]
+        x1 = torch.flatten(x1, start_dim=1)
+        x1 = F.relu(self.linear1_0(x1))
+        x1 = F.relu(self.linear2_0(x1))
+        #second input layer
+        x2 = x[1]
+        x2 = torch.flatten(x2, start_dim=1)
+        x2 = F.relu(self.linear1_1(x2))
+        x2 = F.relu(self.linear2_1(x2))
+        #calculate the mean 
+        # print(x1.shape, x2.shape)
+        x = torch.cat((x1,x2),dim= 1)
+        # print(x.shape)
+        mu =  self.linear2(x)
+        #calculate the varience TODO:why the exponent ? 
+        sigma = torch.exp(self.linear3(x))
+        #the latent space to sample from 
+        z = mu + sigma*self.N.sample(mu.shape)
+        # kl divergance for the latent space distribution and guassian normal distribution with mean = 0 and varience = 1 
+        self.kl = (sigma**2 + mu**2 - torch.log(sigma) - 1/2).sum()
+        return z
 
 class Decoder(nn.Module) :
 
@@ -84,7 +127,7 @@ class VariationalAutoEncoder(nn.Module):
     def __init__(self, latentDims) :
         super().__init__()
 
-        self.encoder = VariationalEncoder(latentDims)
+        self.encoder = VariationalEncoder_1(latentDims)
         self.decoder = Decoder(latentDims)
 
 
@@ -95,22 +138,26 @@ class VariationalAutoEncoder(nn.Module):
 
 
 if __name__=="__main__":
-
-    latentDims = 2 
-    epochs = 1
-    save_path = "D:\Deep-Learning-2021\Deep-Learning-2021\models\model.pth"
-    mnist_trainset = datasets.MNIST(root= "D:\Deep-Learning-2021\Deep-Learning-2021\src\data", train=True, download = True, transform = torchvision.transforms.ToTensor())
+    sys.path.insert(1, "D:\Deep-Learning-2021\Deep-Learning-2021")
+    from src.data.load_mnist import MNIST 
+    latentDims = 10
+    epochs = 10
+    save_path = "D:\Deep-Learning-2021\Deep-Learning-2021\models\model_sum.pth"
+    mnist_trainset = MNIST(root= "D:\Deep-Learning-2021\Deep-Learning-2021\src\data", train=True, transform = torchvision.transforms.ToTensor())
     vae = VariationalAutoEncoder(latentDims)
     opt = torch.optim.Adam(vae.parameters())
-    #TODO : compatibility to GPU
+    train_loader = DataLoader(mnist_trainset, batch_size= 2 ) 
+    sum_images = mnist_trainset.get_examples()
+    # TODO : compatibility to GPU
     for epoch in tqdm(range(epochs)):
-        for x , y in tqdm(mnist_trainset):
+        for images , labels in tqdm(train_loader):
             opt.zero_grad()
-            x_pred = vae(x)
-            loss = ((x - x_pred)**2).sum() + vae.encoder.kl
+            x_pred = vae(images)
+            total = labels.sum()
+            print(labels, total, type(total))
+            loss = ((sum_images[total] - x_pred)**2).sum() + vae.encoder.kl
             loss.backward()
             opt.step()
-            # print(epoch)
 
     torch.save(vae.state_dict(), save_path)
-    
+
