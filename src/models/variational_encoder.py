@@ -18,9 +18,13 @@ import numpy as np
 import torchvision.datasets as datasets
 from tqdm import tqdm 
 import time
+from src.data.MNIST.mnist import sumNumber
 from torch.utils.data import DataLoader
 import sys 
 import matplotlib.pyplot as plt
+from torch.nn import BCELoss
+from src.models.train_model import validate
+
 # 
 #from https://github.com/dstallmann/cell_cultivation_analysis/blob/1ef9c0e11e05200d672323f604674c3bc9e5e016/vae/VAE.py#L39
 class UnFlatten(nn.Module):
@@ -276,7 +280,7 @@ class VariationalAutoEncoderConv(nn.Module):
 
 class encoderConv(nn.Module):
 
-    def __init__(self, latent_dims, image_channels=1, init_channels=8):
+    def __init__(self, latent_dims, image_channels=1, init_channels=8, device='cpu'):
         super().__init__()
 
         self.encoder = nn.Sequential(
@@ -302,15 +306,17 @@ class encoderConv(nn.Module):
         self.linear3 = nn.Linear(64, latent_dims)
         #adding the distribution to sample from 
         self.N = torch.distributions.Normal(0, 1)
+        self.N.loc = self.N.loc.to(device)
+        self.N.scale = self.N.scale.to(device)
         self.kl = 0
 
     def forward(self, x):
         x = self.encoder(x)
         # print(x.shape)
         mu =  self.linear2(x)
-        #calculate the varience TODO:why the exponent ? 
+        # calculate the varience TODO:why the exponent ?
         sigma = torch.exp(self.linear3(x))
-        #the latent space to sample from 
+        # the latent space to sample from
         z = mu + sigma*self.N.sample(mu.shape)
         # kl divergance for the latent space distribution and guassian normal distribution with mean = 0 and varience = 1 
         self.kl = (sigma**2 + mu**2 - torch.log(sigma) - 1/2).sum()
@@ -318,11 +324,11 @@ class encoderConv(nn.Module):
         return z
 
         
-class decoderConv(nn.Module) :
+class decoderConv(nn.Module):
 
     def __init__(self, latentDims, init_channels=8, image_channels= 1):
         super().__init__()
-        #simple decoder layer
+        # simple decoder layer
         self.linear1 = nn.Linear(latentDims, 64)
         self.decoder = nn.Sequential(
             UnFlatten(),
@@ -340,79 +346,140 @@ class decoderConv(nn.Module) :
     def forward(self, z):
         z = F.relu(self.linear1(z))
         # print(z.shape)
-        #TODO why sigmoid ? 
-        return self.decoder(z)
+        return torch.sigmoid(self.decoder(z))
 
 
 class VariationalAutoEncoderConv(nn.Module):
 
-    def __init__(self, latentDims) :
+    def __init__(self, latentDims, device):
         super().__init__()
-
-        self.encoder = encoderConv(latentDims, init_channels=8, image_channels=1)
-        self.decoder = decoderConv(latentDims, init_channels=8, image_channels=1)
+        self.encoder = encoderConv(latentDims, init_channels=16, image_channels=2, device=device)
+        self.decoder = decoderConv(latentDims, init_channels=16, image_channels=2)
 
     def forward(self, x):
 
         z = self.encoder(x)
         return self.decoder(z)
 #############################################################
-#                   trian the model                         #
+#                   train the model                         #
 #############################################################
 
-def train(model, epochs, optimizer, dataloader, output):
-    # TODO : compatibility to GPU
-    losses =[]
-    total_loss = 0
-    loss_hist = []
+def train(model, epochs, optimizer, train_dataloader, val_loader, device,output_iamges, save_path):
+    train_loss = []
+    val_loss = []
+    prev_val_loss = np.inf
+    lossFunc = BCELoss(reduction='sum')
     for epoch in range(epochs):
-        for images , labels in tqdm(dataloader):
-            model.train()
-            optimizer.zero_grad()
+        model.train()
+        running_loss = 0
+        counter = 0
+        for images , labels in tqdm(train_dataloader):
+            images = images.to(device)
             x_pred = model(images)
-            total = labels.sum()
-            # print(labels, total, type(total))
+            # n1, n2 = get_digitis(labels)
+            # sum_image = torch.cat([output_iamges[n1].unsqueeze(0), output_images[n2].unsqueeze(0)])
+            # sum_image = sum_image.unsqueeze(1).to(device)
             # loss = ((output[total] - x_pred)**2).sum() + model.encoder.kl
-            # print(images.shape, x_pred.shape)
-            loss = ((images - x_pred)**2).sum() + model.encoder.kl
+            # loss = lossFunc(x_pred,images) + model.encoder.kl
+            # print(labels)
+            # fig , axs = plt.subplots(2,2)
+            # axs[0, 0].imshow(images[0].squeeze(0)[0].cpu().numpy())
+            # axs[0, 1].imshow(images[0].squeeze(0)[1].cpu().numpy())
+            # axs[1, 0].imshow(output_images[labels][0].squeeze(0).cpu().numpy())
+            # axs[1, 1].imshow(output_images[labels][1].squeeze(0).cpu().numpy())
+            # plt.show()
+            loss = lossFunc(x_pred, output_iamges[labels].unsqueeze(0).to(device)) + model.encoder.kl
             loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-            loss_hist.append(loss.item())
-        total_loss = total_loss/len(dataloader)
-        losses.append(loss_hist)
-        loss_hist = []
-        print(f"loss: {total_loss:>7f} ")
-        total_loss = 0
-        torch.save(model.state_dict(), save_path + f"\model{epoch}.pth")
-    return losses[:]
+            if counter%64 == 0 :
+                optimizer.step()
+                optimizer.zero_grad()
+            counter += 1
+            running_loss += loss.item()
+        total_loss = running_loss/counter
+        train_loss.append(total_loss)
+        val = validate(model, val_loader, device, output_images, lossFunc)
+        val_loss.append(val)
+        print(f"train_loss -> epoch{epoch}: {total_loss:>7f} ")
+        print(f"val_loss: {val:>7f} ")
+        if val < prev_val_loss:
+            torch.save(model.state_dict(), save_path + f"/model{epoch}.pth")
+            prev_val_loss = val
+    return train_loss[:], val_loss[:]
 
 def get_examples(mnist):
     example = []
-    for i in range(10):
-        example.append(mnist.data[mnist.targets == i][0])
+    for i in range(19):
+        n1, n2 = get_digitis(i)
+        image1 = mnist.train_data[mnist.train_labels== n1][0]/255
+        image2 = mnist.train_data[mnist.train_labels== n2][0]/255
+        example.append(torch.cat([image1.unsqueeze(0), image2.unsqueeze(0)]))
     return example
+
+def get_digitis(number):
+    if number//10 == 0:
+        return 0, number
+    else:
+        return number//10, number%10
+
+
+def save_loss_plot(train_loss, val_loss, learning_rate, latent_dims, epochs):
+    plt.figure(figsize=(10,7))
+    plt.plot(train_loss, label="train_loss")
+    plt.plot(val_loss, label="val_loss")
+    plt.xlabel("epochs")
+    plt.ylabel("loss")
+    plt.legend()
+    plt.savefig(f"/homes/bacharya/PycharmProjects/Deep-Learning-2021/reports/figures/vae_loss_{latent_dims}_{learning_rate}_{epochs}.jpg")
+
 
 if __name__=="__main__":
     # sys.path.insert(1, "D:\Deep-Learning-2021\Deep-Learning-2021")
-    # from src.data.load_mnist import MNIST 
-    latentDims = 16 
-    epochs = 40
-    learning_rate = 1e-7
-    save_path = "D:\Deep-Learning-2021\Deep-Learning-2021\models"
-    mnist_trainset = MNIST(root= "D:\Deep-Learning-2021\Deep-Learning-2021\src\data", train=True, transform = torchvision.transforms.ToTensor())
-    vae = VariationalAutoEncoderConv(latentDims)
-    opt = torch.optim.Adam(vae.parameters(), lr=learning_rate)
-    train_loader = DataLoader(mnist_trainset, batch_size= 2, shuffle=True ) 
-    output_images = get_examples(mnist_trainset) 
-    # print(output_images[0].shape)
+    from src.models.train_model import validate
+    # torch.backends.cudnn.enabled = False
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = "cpu"
+    latentDims = 10
+    epochs = 30  
+    learning_rate = 0.001
+    save_path = "/homes/bacharya/PycharmProjects/Deep-Learning-2021/models/"
+    mnist_trainset = MNIST(root= "/homes/bacharya/PycharmProjects/Deep-Learning-2021/src/data/MNIST", train=True, download=True, transform = torchvision.transforms.ToTensor())
+    mnist_val =  MNIST(root= "/homes/bacharya/PycharmProjects/Deep-Learning-2021/src/data/MNIST", train=False, download=True, transform = torchvision.transforms.ToTensor())
+    train_loader = DataLoader(mnist_trainset, batch_size=2, shuffle=True)
+    val_loader = DataLoader(mnist_val, batch_size=2, shuffle=False)
+    train_data = []
+    train_label = []
+    for data, label in train_loader:
+        data = torch.cat([data[0], data[1]])
+        label = torch.sum(label)
+        train_data.append(data.unsqueeze(0))
+        train_label.append(label.unsqueeze(0))
+    train_data = torch.cat(train_data)
+    train_label = torch.cat(train_label)
+    train_dataset = sumNumber(train_data, train_label)
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
+    ################################################
+    val_data = []
+    val_label = []
+    for data, label in val_loader:
+        data = torch.cat([data[0], data[1]])
+        label = torch.sum(label)
+        val_data.append(data.unsqueeze(0))
+        val_label.append(label.unsqueeze(0))
+    val_data = torch.cat(val_data)
+    val_label = torch.cat(val_label)
+    val_dataset = sumNumber(val_data, val_label)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    output_images = get_examples(mnist_trainset)
+    print(output_images[0].shape)
+    # plt.imshow(output_images[1][1])
+    # plt.show()
     # print(len(next(iter(train_loader))))
     # print(vae)
     # output = vae(next(iter(train_loader))[0])
-    # print(output.shape)
-    # plt.imshow(output_images)
-    # plt.show()
-    
-    losses = train(vae, epochs, opt, train_loader, output_images)
+    vae = VariationalAutoEncoderConv(latentDims, device)
+    vae = vae.to(device)
+    opt = torch.optim.Adam(vae.parameters(), lr=learning_rate)
+    train_loss, val_loss = train(vae, epochs, opt, train_loader, val_loader, device, output_images, save_path=save_path)
+    save_loss_plot(train_loss, val_loss, learning_rate, latentDims, epochs)
     # np.save(save_path + "\losses.npy", np.array(losses))
     # print(mnist_trainset[0])
