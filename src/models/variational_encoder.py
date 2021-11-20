@@ -1,4 +1,5 @@
 # from _typeshed import OpenTextMode
+import os
 from typing import ForwardRef
 from matplotlib import image
 import torch
@@ -360,11 +361,12 @@ class VariationalAutoEncoderConv(nn.Module):
 
         z = self.encoder(x)
         return self.decoder(z)
+
 #############################################################
 #                   train the model                         #
 #############################################################
 
-def train(model, epochs, optimizer, train_dataloader, val_loader, device,output_iamges, save_path):
+def train(model, epochs, optimizer, train_dataloader, val_loader, device,output_images, save_path):
     train_loss = []
     val_loss = []
     prev_val_loss = np.inf
@@ -372,27 +374,19 @@ def train(model, epochs, optimizer, train_dataloader, val_loader, device,output_
     for epoch in range(epochs):
         model.train()
         running_loss = 0
-        counter = 0
+        counter = 1
         for images , labels in tqdm(train_dataloader):
             images = images.to(device)
             x_pred = model(images)
-            # n1, n2 = get_digitis(labels)
-            # sum_image = torch.cat([output_iamges[n1].unsqueeze(0), output_images[n2].unsqueeze(0)])
-            # sum_image = sum_image.unsqueeze(1).to(device)
-            # loss = ((output[total] - x_pred)**2).sum() + model.encoder.kl
-            # loss = lossFunc(x_pred,images) + model.encoder.kl
-            # print(labels)
-            # fig , axs = plt.subplots(2,2)
-            # axs[0, 0].imshow(images[0].squeeze(0)[0].cpu().numpy())
-            # axs[0, 1].imshow(images[0].squeeze(0)[1].cpu().numpy())
-            # axs[1, 0].imshow(output_images[labels][0].squeeze(0).cpu().numpy())
-            # axs[1, 1].imshow(output_images[labels][1].squeeze(0).cpu().numpy())
-            # plt.show()
-            loss = lossFunc(x_pred, output_iamges[labels].unsqueeze(0).to(device)) + model.encoder.kl
+            if debug:
+                display_images(images, output_images, labels)
+            # print(x_pred.max())
+            # loss = lossFunc(x_pred, output_images[labels].unsqueeze(0).to(device)) + model.encoder.kl
+            loss = lossFunc(x_pred, outputloss_loss(output_images, labels).to(device)) + model.encoder.kl
             loss.backward()
-            if counter%64 == 0 :
-                optimizer.step()
-                optimizer.zero_grad()
+            # if counter%32 == 0 :
+            optimizer.step()
+            optimizer.zero_grad()
             counter += 1
             running_loss += loss.item()
         total_loss = running_loss/counter
@@ -402,9 +396,23 @@ def train(model, epochs, optimizer, train_dataloader, val_loader, device,output_
         print(f"train_loss -> epoch{epoch}: {total_loss:>7f} ")
         print(f"val_loss: {val:>7f} ")
         if val < prev_val_loss:
-            torch.save(model.state_dict(), save_path + f"/model{epoch}.pth")
+            torch.save(model.state_dict(), save_path + f"/model_{epoch}.pth")
             prev_val_loss = val
     return train_loss[:], val_loss[:]
+
+def outputloss_loss(output, labels):
+    contact_image = []
+    for label in labels:
+        contact_image.append(output[label].unsqueeze(0))
+    return torch.cat(contact_image)
+
+def display_images(images, output_images, labels):
+    fig , axs = plt.subplots(2,2)
+    axs[0, 0].imshow(images[0].squeeze(0)[0].cpu().numpy())
+    axs[0, 1].imshow(images[0].squeeze(0)[1].cpu().numpy())
+    axs[1, 0].imshow(output_images[labels][0].squeeze(0).cpu().numpy())
+    axs[1, 1].imshow(output_images[labels][1].squeeze(0).cpu().numpy())
+    plt.show()
 
 def get_examples(mnist):
     example = []
@@ -415,6 +423,7 @@ def get_examples(mnist):
         example.append(torch.cat([image1.unsqueeze(0), image2.unsqueeze(0)]))
     return example
 
+
 def get_digitis(number):
     if number//10 == 0:
         return 0, number
@@ -422,64 +431,68 @@ def get_digitis(number):
         return number//10, number%10
 
 
-def save_loss_plot(train_loss, val_loss, learning_rate, latent_dims, epochs):
+def save_loss_plot(train_loss, val_loss, savepath):
     plt.figure(figsize=(10,7))
     plt.plot(train_loss, label="train_loss")
     plt.plot(val_loss, label="val_loss")
     plt.xlabel("epochs")
     plt.ylabel("loss")
     plt.legend()
-    plt.savefig(f"/homes/bacharya/PycharmProjects/Deep-Learning-2021/reports/figures/vae_loss_{latent_dims}_{learning_rate}_{epochs}.jpg")
+    plt.savefig(savepath + "/losscurve.jpg")
 
+
+def transform_dataset(dataloader, batch_size):
+    allData = []
+    allLabel = []
+    for data, label in dataloader:
+        data = torch.cat([data[0], data[1]])
+        label = torch.sum(label)
+        allData.append(data.unsqueeze(0))
+        allLabel.append(label.unsqueeze(0))
+    data = torch.cat(allData)
+    label = torch.cat(allLabel)
+    dataset = sumNumber(data, label)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 if __name__=="__main__":
-    # sys.path.insert(1, "D:\Deep-Learning-2021\Deep-Learning-2021")
+    global debug
+    debug = False
     from src.models.train_model import validate
-    # torch.backends.cudnn.enabled = False
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # device = "cpu"
-    latentDims = 10
-    epochs = 30  
-    learning_rate = 0.001
-    save_path = "/homes/bacharya/PycharmProjects/Deep-Learning-2021/models/"
+
     mnist_trainset = MNIST(root= "/homes/bacharya/PycharmProjects/Deep-Learning-2021/src/data/MNIST", train=True, download=True, transform = torchvision.transforms.ToTensor())
     mnist_val =  MNIST(root= "/homes/bacharya/PycharmProjects/Deep-Learning-2021/src/data/MNIST", train=False, download=True, transform = torchvision.transforms.ToTensor())
     train_loader = DataLoader(mnist_trainset, batch_size=2, shuffle=True)
-    val_loader = DataLoader(mnist_val, batch_size=2, shuffle=False)
-    train_data = []
-    train_label = []
-    for data, label in train_loader:
-        data = torch.cat([data[0], data[1]])
-        label = torch.sum(label)
-        train_data.append(data.unsqueeze(0))
-        train_label.append(label.unsqueeze(0))
-    train_data = torch.cat(train_data)
-    train_label = torch.cat(train_label)
-    train_dataset = sumNumber(train_data, train_label)
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
-    ################################################
-    val_data = []
-    val_label = []
-    for data, label in val_loader:
-        data = torch.cat([data[0], data[1]])
-        label = torch.sum(label)
-        val_data.append(data.unsqueeze(0))
-        val_label.append(label.unsqueeze(0))
-    val_data = torch.cat(val_data)
-    val_label = torch.cat(val_label)
-    val_dataset = sumNumber(val_data, val_label)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    val_loader = DataLoader(mnist_val, batch_size=2, shuffle=True)
+    batch_size = 64
+    # transform the data to give out two images at a time
+    train_loader = transform_dataset(train_loader, batch_size)
+    val_loader = transform_dataset(val_loader, batch_size)
+
+    # get the example images for the output
     output_images = get_examples(mnist_trainset)
-    print(output_images[0].shape)
-    # plt.imshow(output_images[1][1])
-    # plt.show()
-    # print(len(next(iter(train_loader))))
-    # print(vae)
-    # output = vae(next(iter(train_loader))[0])
-    vae = VariationalAutoEncoderConv(latentDims, device)
-    vae = vae.to(device)
-    opt = torch.optim.Adam(vae.parameters(), lr=learning_rate)
-    train_loss, val_loss = train(vae, epochs, opt, train_loader, val_loader, device, output_images, save_path=save_path)
-    save_loss_plot(train_loss, val_loss, learning_rate, latentDims, epochs)
-    # np.save(save_path + "\losses.npy", np.array(losses))
+
+    # define hyper-parameters
+    latentDims = [2, 4, 8, 10, 16]
+    epochs = 40
+    learning_rates = [0.001, 0.0001, 0.0001]
+
+    for latentDim in latentDims:
+        for learning_rate in learning_rates:
+            print("="*10)
+            print("Latent Dimension", latentDim)
+            print("Learning Rate", learning_rate)
+            save_path = os.path.join("/homes/bacharya/PycharmProjects/Deep-Learning-2021/models/" +  str(latentDim) +"_"+ str(learning_rate) )
+            try:
+                os.mkdir(save_path)
+            except FileExistsError:
+                pass
+            # model creation
+            vae = VariationalAutoEncoderConv(latentDim, device)
+            vae = vae.to(device)
+            opt = torch.optim.Adam(vae.parameters(), lr=learning_rate)
+            train_loss, val_loss = train(vae, epochs, opt, train_loader, val_loader, device, output_images, save_path=save_path)
+            save_loss_plot(train_loss, val_loss, save_path)
+            np.save(save_path + "\train_loss.npy", np.array(train_loss))
+            np.save(save_path + "\test_loss.npy", np.array(val_loss))
     # print(mnist_trainset[0])
